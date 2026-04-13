@@ -1,11 +1,471 @@
 <!DOCTYPE html>
-<html lang="en">
-    <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>PakePlus</title>
-    </head>
-    <body>
-        PakePlus
-    </body>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>万年历查询工具</title>
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.25.0/full/pyodide.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --primary: #4f46e5;
+      --primary-light: #6366f1;
+      --primary-dark: #3730a3;
+      --accent: #f59e0b;
+      --bg: #f0f2f5;
+      --card-bg: #ffffff;
+      --text: #1f2937;
+      --text-secondary: #6b7280;
+      --border: #e5e7eb;
+      --success: #10b981;
+      --error: #ef4444;
+      --radius: 12px;
+      --shadow: 0 1px 3px rgba(0,0,0,.08), 0 4px 12px rgba(0,0,0,.04);
+    }
+    body {
+      font-family: -apple-system, "Microsoft YaHei", "微软雅黑", "Segoe UI", Roboto, sans-serif;
+      background: var(--bg); color: var(--text);
+      min-height: 100vh; display: flex; flex-direction: column; align-items: center; line-height: 1.6;
+    }
+    #loading-overlay {
+      position: fixed; inset: 0; z-index: 9999;
+      background: rgba(255,255,255,.96);
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      transition: opacity .4s;
+    }
+    #loading-overlay.hidden { opacity: 0; pointer-events: none; }
+    .spinner {
+      width: 48px; height: 48px;
+      border: 4px solid var(--border); border-top-color: var(--primary);
+      border-radius: 50%; animation: spin .8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading-text { margin-top: 16px; font-size: 15px; color: var(--text-secondary); }
+    #loading-progress { margin-top: 8px; font-size: 13px; color: #9ca3af; }
+    .container { width: 100%; max-width: 900px; padding: 24px 16px 40px; }
+    .app-title {
+      text-align: center; font-size: clamp(22px, 5vw, 28px); font-weight: 700;
+      color: var(--primary-dark); margin: 16px 0 24px; letter-spacing: 2px;
+    }
+    .app-title::after {
+      content: ''; display: block; width: 60px; height: 3px;
+      background: linear-gradient(90deg, var(--primary), var(--accent));
+      margin: 10px auto 0; border-radius: 2px;
+    }
+    .card {
+      background: var(--card-bg); border-radius: var(--radius);
+      box-shadow: var(--shadow); padding: 20px; margin-bottom: 16px;
+    }
+    .card-title {
+      font-size: 14px; font-weight: 600; color: var(--text-secondary);
+      margin-bottom: 14px; padding-bottom: 10px;
+      border-bottom: 1px solid var(--border);
+      text-transform: uppercase; letter-spacing: 1px;
+    }
+    .input-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
+    .input-group { display: flex; flex-direction: column; gap: 4px; }
+    .input-group label { font-size: 13px; font-weight: 600; color: var(--text-secondary); }
+    .input-group input, .input-group select {
+      height: 40px; padding: 0 12px;
+      border: 1.5px solid var(--border); border-radius: 8px;
+      font-size: 15px; font-family: inherit; color: var(--text); background: #fff;
+      transition: border-color .2s; outline: none;
+    }
+    .input-group input:focus, .input-group select:focus {
+      border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79,70,229,.12);
+    }
+    .input-group input.input-error { border-color: var(--error); box-shadow: 0 0 0 3px rgba(239,68,68,.12); }
+    .hint-text { font-size: 12px; color: #9ca3af; margin-top: 2px; }
+    .btn-bar { display: flex; flex-wrap: wrap; gap: 8px; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      height: 40px; padding: 0 18px; border: none; border-radius: 8px;
+      font-size: 14px; font-weight: 600; font-family: inherit;
+      cursor: pointer; transition: all .2s; white-space: nowrap;
+    }
+    .btn:active { transform: scale(.97); }
+    .btn-primary { background: var(--primary); color: #fff; }
+    .btn-primary:hover { background: var(--primary-dark); transform: translateY(-1px); }
+    .btn-secondary { background: var(--bg); color: var(--text); border: 1.5px solid var(--border); }
+    .btn-secondary:hover { background: #e5e7eb; }
+    .btn-danger { background: transparent; color: var(--error); border: 1.5px solid var(--error); }
+    .btn-danger:hover { background: #fef2f2; }
+    #result {
+      background: #f8f9fb; border-radius: 8px; padding: 16px;
+      min-height: 200px; max-height: 55vh; overflow: auto;
+      font-family: Consolas, "Courier New", monospace; font-size: 14px;
+      line-height: 1.7; white-space: pre-wrap; word-break: break-all;
+    }
+    #result:empty::before { content: "查询结果将显示在这里…"; color: #b0b8c4; }
+    .cal-month-title {
+      font-weight: 700; font-size: 15px; color: var(--primary-dark);
+      margin: 12px 0 6px; text-align: center;
+    }
+    .cal-table { border-collapse: collapse; margin: 0 auto 20px; font-family: Consolas, monospace; font-size: 13px; }
+    .cal-table th { background: var(--primary); color: #fff; padding: 6px 10px; font-size: 12px; font-weight: 600; }
+    .cal-table th:first-child { border-radius: 6px 0 0 0; }
+    .cal-table th:last-child { border-radius: 0 6px 0 0; }
+    .cal-table td { padding: 5px 10px; text-align: center; border: 1px solid #e5e7eb; min-width: 32px; }
+    .cal-table td.weekend { color: var(--error); }
+    .cal-table td.today { background: #fef3c7; font-weight: 700; }
+    .cal-table td.empty { background: #f3f4f6; }
+    .detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 12px 0; }
+    .detail-item { background: #fff; border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
+    .detail-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
+    .detail-value { font-size: 18px; font-weight: 700; color: var(--primary-dark); }
+    .leap-result { font-size: 20px; font-weight: 700; text-align: center; margin: 12px 0; }
+    .leap-yes { color: var(--success); }
+    .leap-no { color: var(--error); }
+    .toast {
+      position: fixed; top: 20px; right: 20px; z-index: 10000;
+      padding: 12px 20px; border-radius: 8px; font-size: 14px; font-weight: 500;
+      color: #fff; box-shadow: 0 4px 16px rgba(0,0,0,.15);
+      animation: slideIn .3s ease-out; max-width: 360px;
+    }
+    .toast-error { background: var(--error); }
+    .toast-success { background: var(--success); }
+    @keyframes slideIn { from { transform: translateX(100%); opacity:0; } to { transform: translateX(0); opacity:1; } }
+    .status-bar { margin-top: 8px; font-size: 12px; color: var(--text-secondary); text-align: right; }
+    @media (max-width: 600px) {
+      .container { padding: 12px 10px 30px; }
+      .card { padding: 14px; }
+      .input-row { flex-direction: column; }
+      .input-group { width: 100%; }
+      .input-group input, .input-group select { width: 100%; }
+      .btn-bar { justify-content: center; }
+      .btn { flex: 1; min-width: 0; padding: 0 10px; font-size: 13px; }
+    }
+  </style>
+</head>
+<body>
+
+<div id="loading-overlay">
+  <div class="spinner"></div>
+  <div id="loading-text">正在加载 Python 运行环境…</div>
+  <div id="loading-progress">首次加载约需 10-30 秒，请耐心等待</div>
+</div>
+
+<div class="container">
+  <h1 class="app-title">📅 万年历查询系统</h1>
+
+  <div class="card">
+    <div class="card-title">日期选择</div>
+    <div class="input-row">
+      <div class="input-group">
+        <label for="yearInput">年份</label>
+        <input type="number" id="yearInput" min="1" max="9999" />
+      </div>
+      <div class="input-group">
+        <label for="monthSelect">月份</label>
+        <select id="monthSelect"></select>
+      </div>
+      <div class="input-group">
+        <label for="dayInput">日期</label>
+        <input type="number" id="dayInput" min="1" max="31" placeholder="输入具体日期" />
+        <span class="hint-text">查询"日期详情"时必填</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">操作</div>
+    <div class="btn-bar">
+      <button class="btn btn-primary" onclick="doAction('monthly')">📅 查询月历</button>
+      <button class="btn btn-primary" onclick="doAction('yearly')">📆 查询年历</button>
+      <button class="btn btn-primary" onclick="doAction('day_info')">🔍 日期详情</button>
+      <button class="btn btn-secondary" onclick="doAction('leap')">✅ 闰年判断</button>
+      <button class="btn btn-danger" onclick="clearResult()">🗑 清空</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">查询结果</div>
+    <div id="result"></div>
+  </div>
+  <div class="status-bar" id="statusBar">就绪</div>
+</div>
+
+<script>
+let pyodide = null;
+let pythonReady = false;
+
+/* ========== 初始化 ========== */
+window.addEventListener('DOMContentLoaded', async () => {
+  const now = new Date();
+  document.getElementById('yearInput').value = now.getFullYear();
+  const sel = document.getElementById('monthSelect');
+  for (let m = 1; m <= 12; m++) {
+    const opt = document.createElement('option');
+    opt.value = m; opt.textContent = m + ' 月';
+    if (m === now.getMonth() + 1) opt.selected = true;
+    sel.appendChild(opt);
+  }
+  try {
+    pyodide = await loadPyodide();
+    pythonReady = true;
+    document.getElementById('loading-overlay').classList.add('hidden');
+    showToast('Python 环境加载完成', 'success');
+  } catch (err) {
+    document.getElementById('loading-text').textContent = '加载失败，请刷新重试';
+    document.getElementById('loading-progress').textContent = err.message;
+    console.error('Pyodide 加载失败:', err);
+  }
+});
+
+/* ========== Toast 提示 ========== */
+function showToast(msg, type) {
+  type = type || 'error';
+  const t = document.createElement('div');
+  t.className = 'toast toast-' + type;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(function() { t.style.opacity = '0'; t.style.transition = 'opacity .3s'; }, 2500);
+  setTimeout(function() { t.remove(); }, 3000);
+}
+
+/* ========== 读取输入 ========== */
+function getInputs() {
+  var yearRaw = document.getElementById('yearInput').value.trim();
+  var monthRaw = document.getElementById('monthSelect').value;
+  var dayRaw = document.getElementById('dayInput').value.trim();
+
+  var year = yearRaw !== '' ? parseInt(yearRaw, 10) : NaN;
+  var month = monthRaw !== '' ? parseInt(monthRaw, 10) : NaN;
+  var day = dayRaw !== '' ? parseInt(dayRaw, 10) : NaN;
+
+  return { year: year, month: month, day: day };
+}
+
+/* ========== 用 JS 验证日期是否真实存在 ========== */
+function isValidDate(y, m, d) {
+  // 先检查基本范围
+  if (y < 1 || y > 9999 || m < 1 || m > 12 || d < 1 || d > 31) return false;
+  // 用 JS Date 对象验证（自动处理闰年、大小月）
+  var test = new Date(y, m - 1, d);
+  return test.getFullYear() === y && test.getMonth() === m - 1 && test.getDate() === d;
+}
+
+/* ========== 清除输入框错误样式 ========== */
+function clearInputError(id) {
+  document.getElementById(id).classList.remove('input-error');
+}
+document.getElementById('yearInput').addEventListener('input', function() { clearInputError('yearInput'); });
+document.getElementById('dayInput').addEventListener('input', function() { clearInputError('dayInput'); });
+
+/* ========== 核心操作（整体 try-catch 防止静默失败） ========== */
+async function doAction(action) {
+  if (!pythonReady) { showToast('Python 环境尚未加载完成，请稍候'); return; }
+
+  try {
+    var inp = getInputs();
+    var year = inp.year;
+    var month = inp.month;
+    var day = inp.day;
+    var html = '';
+    var status = '';
+
+    /* ---------- 查询月历 ---------- */
+    if (action === 'monthly') {
+      if (isNaN(year) || year < 1 || year > 9999) {
+        showToast('请输入有效的年份（1-9999）');
+        document.getElementById('yearInput').classList.add('input-error');
+        return;
+      }
+      if (isNaN(month) || month < 1 || month > 12) {
+        showToast('请选择有效的月份');
+        return;
+      }
+
+      var out = await pyodide.runPythonAsync(
+        'import calendar,json\n' +
+        'cal=calendar.TextCalendar(calendar.MONDAY)\n' +
+        'json.dumps({"cal":cal.formatmonth(' + year + ',' + month + '),"name":calendar.month_name[' + month + ']})'
+      );
+      html = renderMonthly(year, month, JSON.parse(out));
+      status = '已显示 ' + year + '年' + month + '月 的月历';
+    }
+
+    /* ---------- 查询年历 ---------- */
+    else if (action === 'yearly') {
+      if (isNaN(year) || year < 1 || year > 9999) {
+        showToast('请输入有效的年份（1-9999）');
+        document.getElementById('yearInput').classList.add('input-error');
+        return;
+      }
+
+      html = renderYearly(year);
+      status = '已显示 ' + year + '年 的全年日历';
+    }
+
+    /* ---------- 日期详情（修复核心） ---------- */
+    else if (action === 'day_info') {
+      // 1. 验证年份
+      if (isNaN(year) || year < 1 || year > 9999) {
+        showToast('请输入有效的年份（1-9999）');
+        document.getElementById('yearInput').classList.add('input-error');
+        return;
+      }
+      // 2. 验证月份
+      if (isNaN(month) || month < 1 || month > 12) {
+        showToast('请选择有效的月份');
+        return;
+      }
+      // 3. 日期必填检查
+      if (isNaN(day)) {
+        showToast('查询日期详情需要输入具体日期');
+        document.getElementById('dayInput').classList.add('input-error');
+        return;
+      }
+      // 4. 日期有效性检查（用 JS 提前验证，避免 Python 异常）
+      if (!isValidDate(year, month, day)) {
+        showToast(year + '年' + month + '月没有' + day + '号，请检查日期');
+        document.getElementById('dayInput').classList.add('input-error');
+        return;
+      }
+
+      // 5. 所有验证通过，调用 Python（不再需要 try-except）
+      var out2 = await pyodide.runPythonAsync(
+        'import calendar,json\n' +
+        'from datetime import datetime\n' +
+        'd=datetime(' + year + ',' + month + ',' + day + ')\n' +
+        'json.dumps({\n' +
+        '  "w":["星期一","星期二","星期三","星期四","星期五","星期六","星期日"][d.weekday()],\n' +
+        '  "lp":calendar.isleap(' + year + '),\n' +
+        '  "doy":d.timetuple().tm_yday,\n' +
+        '  "dim":calendar.monthrange(' + year + ',' + month + ')[1],\n' +
+        '  "fw":calendar.monthrange(' + year + ',' + month + ')[0]+1\n' +
+        '})'
+      );
+      var data = JSON.parse(out2);
+      html = renderDayInfo(year, month, day, data);
+      status = '已显示 ' + year + '年' + month + '月' + day + '日 的详细信息';
+    }
+
+    /* ---------- 闰年判断 ---------- */
+    else if (action === 'leap') {
+      if (isNaN(year) || year < 1 || year > 9999) {
+        showToast('请输入有效的年份（1-9999）');
+        document.getElementById('yearInput').classList.add('input-error');
+        return;
+      }
+
+      var out3 = await pyodide.runPythonAsync(
+        'import calendar,json\n' +
+        'json.dumps({"lp":calendar.isleap(' + year + ')})'
+      );
+      var lpData = JSON.parse(out3);
+      html = renderLeap(year, lpData.lp);
+      status = year + '年' + (lpData.lp ? '是' : '不是') + '闰年';
+    }
+
+    document.getElementById('result').innerHTML = html;
+    document.getElementById('statusBar').textContent = status;
+
+  } catch (err) {
+    // 任何未预期的错误都显示出来，不再静默失败
+    console.error('doAction 出错:', err);
+    showToast('运行出错：' + err.message);
+  }
+}
+
+/* ========== 渲染：月历 ========== */
+function renderMonthly(year, month, data) {
+  var now = new Date();
+  var td = (now.getFullYear() === year && now.getMonth() + 1 === month) ? now.getDate() : -1;
+  var mCN = ['','一月','二月','三月','四月','五月','六月','七月','八月','九月','十月','十一月','十二月'];
+  var dn = ['一','二','三','四','五','六','日'];
+  var fd = (new Date(year, month - 1, 1).getDay() + 6) % 7;
+  var dim = new Date(year, month, 0).getDate();
+
+  var h = '<div class="cal-month-title">' + year + '年 ' + mCN[month] + '</div>';
+  h += '<table class="cal-table"><tr>';
+  for (var i = 0; i < 7; i++) h += '<th>' + dn[i] + '</th>';
+  h += '</tr><tr>';
+  for (var j = 0; j < fd; j++) h += '<td class="empty"></td>';
+  for (var d = 1; d <= dim; d++) {
+    var dow = (fd + d - 1) % 7;
+    var c = '';
+    if (dow >= 5) c += ' weekend';
+    if (d === td) c += ' today';
+    h += '<td class="' + c + '">' + d + '</td>';
+    if (dow === 6 && d < dim) h += '</tr><tr>';
+  }
+  var ld = (fd + dim - 1) % 7;
+  for (var k = ld + 1; k < 7; k++) h += '<td class="empty"></td>';
+  h += '</tr></table>';
+  h += '<details style="margin-top:8px"><summary style="cursor:pointer;color:var(--text-secondary);font-size:13px">查看原始文本格式</summary>';
+  h += '<pre style="margin-top:8px;font-size:13px">' + data.cal.replace(/</g, '&lt;') + '</pre></details>';
+  return h;
+}
+
+/* ========== 渲染：年历 ========== */
+function renderYearly(year) {
+  var mCN = ['','一月','二月','三月','四月','五月','六月','七月','八月','九月','十月','十一月','十二月'];
+  var dn = ['一','二','三','四','五','六','日'];
+  var now = new Date();
+  var tm = (now.getFullYear() === year) ? now.getMonth() + 1 : -1;
+  var tday = (tm > 0) ? now.getDate() : -1;
+
+  var h = '<div class="cal-month-title" style="font-size:20px">' + year + '年 全年日历</div>';
+  h += '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">';
+
+  for (var m = 0; m < 12; m++) {
+    var month = m + 1;
+    var fd = (new Date(year, m, 1).getDay() + 6) % 7;
+    var dim = new Date(year, month, 0).getDate();
+
+    h += '<div style="background:#fff;border:1px solid var(--border);border-radius:8px;padding:10px">';
+    h += '<div style="font-weight:700;text-align:center;margin-bottom:6px;color:var(--primary-dark)">' + mCN[month] + '</div>';
+    h += '<table class="cal-table" style="margin:0;font-size:12px"><tr>';
+    for (var i = 0; i < 7; i++) h += '<th style="padding:4px 6px;font-size:11px">' + dn[i] + '</th>';
+    h += '</tr><tr>';
+    for (var j = 0; j < fd; j++) h += '<td class="empty"></td>';
+    for (var d = 1; d <= dim; d++) {
+      var dow = (fd + d - 1) % 7;
+      var c = '';
+      if (dow >= 5) c += ' weekend';
+      if (month === tm && d === tday) c += ' today';
+      h += '<td class="' + c + '" style="padding:3px 6px">' + d + '</td>';
+      if (dow === 6 && d < dim) h += '</tr><tr>';
+    }
+    var ld2 = (fd + dim - 1) % 7;
+    for (var k = ld2 + 1; k < 7; k++) h += '<td class="empty"></td>';
+    h += '</tr></table></div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+/* ========== 渲染：日期详情 ========== */
+function renderDayInfo(y, m, d, data) {
+  var h = '<div class="cal-month-title">' + y + '年' + m + '月' + d + '日 日期详情</div>';
+  h += '<div class="detail-grid">';
+  h += '<div class="detail-item"><div class="detail-label">星期</div><div class="detail-value">' + data.w + '</div></div>';
+  h += '<div class="detail-item"><div class="detail-label">是否闰年</div><div class="detail-value">' + (data.lp ? '✅ 是' : '❌ 否') + '</div></div>';
+  h += '<div class="detail-item"><div class="detail-label">今年第几天</div><div class="detail-value">第 ' + data.doy + ' 天</div></div>';
+  h += '<div class="detail-item"><div class="detail-label">本月天数</div><div class="detail-value">' + data.dim + ' 天</div></div>';
+  h += '<div class="detail-item"><div class="detail-label">本月第一天</div><div class="detail-value">星期' + data.fw + '</div></div>';
+  h += '</div>';
+  return h;
+}
+
+/* ========== 渲染：闰年判断 ========== */
+function renderLeap(year, isLeap) {
+  var h = '<div class="cal-month-title">闰年判断结果</div>';
+  h += '<div class="leap-result ' + (isLeap ? 'leap-yes' : 'leap-no') + '">' + year + '年 ' + (isLeap ? '是 ✅' : '不是 ❌') + ' 闰年</div>';
+  h += '<div class="detail-grid">';
+  h += '<div class="detail-item"><div class="detail-label">全年天数</div><div class="detail-value">' + (isLeap ? 366 : 365) + ' 天</div></div>';
+  h += '<div class="detail-item"><div class="detail-label">二月天数</div><div class="detail-value">' + (isLeap ? 29 : 28) + ' 天</div></div>';
+  h += '</div>';
+  h += '<div style="margin-top:12px;font-size:13px;color:var(--text-secondary)">判断规则：能被4整除但不能被100整除，或能被400整除的年份为闰年。</div>';
+  return h;
+}
+
+/* ========== 清空 ========== */
+function clearResult() {
+  document.getElementById('result').innerHTML = '';
+  document.getElementById('statusBar').textContent = '已清空';
+}
+</script>
+</body>
 </html>
